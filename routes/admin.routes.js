@@ -7,7 +7,7 @@ import path from 'path';
 import {
   normalizeProductPayload, listProducts, getProductById, createProduct, updateProduct,
   listRecommendations, recommendationsForProduct, count, listQrs, createQr, updateQrImage,
-  listLeads, listQuestions, getQrById, listCategories, listLines
+  listLeads, listQuestions, getQrById
 } from '../data/store.js';
 
 const router = Router();
@@ -127,12 +127,19 @@ router.put('/products/:id', adminAuth, upload.single('main_image'), async (req,r
 });
 
 router.get('/categories', adminAuth, async (req,res,next)=>{
-  try { res.json({items: await listCategories()}); }
-  catch(e){ next(e); }
+  try {
+    const products = await listProducts();
+    const names = [...new Set(products.map(p => p.category_name).filter(Boolean))];
+    res.json({items:names.map((name, index)=>({id:index+1, name, slug:slugify(name), is_active:true}))});
+  } catch(e){ next(e); }
 });
+
 router.get('/lines', adminAuth, async (req,res,next)=>{
-  try { res.json({items: await listLines()}); }
-  catch(e){ next(e); }
+  try {
+    const products = await listProducts();
+    const names = [...new Set(products.map(p => p.line_name).filter(Boolean))];
+    res.json({items:names.map((name, index)=>({id:index+1, name, slug:slugify(name), is_active:true}))});
+  } catch(e){ next(e); }
 });
 router.get('/compatibilities', adminAuth, (req,res)=>res.json({items:[]}));
 router.get('/guides', adminAuth, (req,res)=>res.json({items:[{title:'Guía Aspersor Pop-Up', description:'Instalación básica', is_active:true}]}));
@@ -163,7 +170,9 @@ router.get('/qr', adminAuth, async (req,res,next)=>{
 
 router.post('/qr/generate', adminAuth, async (req,res,next)=>{
   try {
-    const product=await getProductById(Number(req.body.productId));
+    const productId = Number(req.body.productId);
+    if(!productId) return res.status(400).json({message:'productId requerido para generar QR'});
+    const product=await getProductById(productId);
     if(!product) return res.status(404).json({message:'Producto no encontrado para generar QR'});
     const code=req.body.qrCode || `${product.sku}-${Date.now().toString().slice(-5)}`;
     let qr={product_id:product.id,qr_code:code,store_name:req.body.store_name||'',store_branch:req.body.store_branch||'',region:req.body.region||'',campaign_name:req.body.campaign_name||'QR producto',is_active:true,created_at:new Date().toISOString(),updated_at:new Date().toISOString()};

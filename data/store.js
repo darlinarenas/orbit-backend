@@ -1,19 +1,13 @@
 import { Pool } from 'pg';
-
 const hasDatabase = !!process.env.DATABASE_URL;
-
 const pool = hasDatabase ? new Pool({
   connectionString: process.env.DATABASE_URL,
   ssl: process.env.PGSSLMODE === 'disable' ? false : { rejectUnauthorized: false }
 }) : null;
 
-const allowedCountTables = new Set(['products', 'recommendations', 'qrs', 'leads', 'scans', 'questions', 'categories', 'lines']);
-
-export { hasDatabase };
-
 function requireDatabase() {
   if (!pool) {
-    throw new Error('DATABASE_URL no está configurada. No se usará memoria ni datos demo. Conecta Supabase en Render.');
+    throw new Error('DATABASE_URL no está configurada en Render. El backend no guardará productos hasta conectar Supabase.');
   }
 }
 
@@ -21,7 +15,6 @@ export async function checkDatabaseConnection() {
   if (!pool) return { configured: false, connected: false, message: 'DATABASE_URL no configurada' };
   try {
     await pool.query('SELECT 1');
-    await ensureDatabase();
     return { configured: true, connected: true, message: 'Supabase/PostgreSQL conectado' };
   } catch (error) {
     return { configured: true, connected: false, message: error.message };
@@ -32,7 +25,7 @@ let initialized = false;
 
 function boolValue(value, fallback = true) {
   if (value === undefined || value === null || value === '') return fallback;
-  return value === true || value === 'true' || value === 1 || value === '1';
+  return value === true || value === 'true';
 }
 
 function slugify(value = '') {
@@ -92,7 +85,8 @@ export function normalizeProductPayload(body = {}, existing = {}, mainImageUrl =
     installation_description: body.installation_description ?? existing.installation_description ?? '',
     is_featured: boolValue(body.is_featured, existing.is_featured || false),
     is_active: boolValue(body.is_active, existing.is_active !== false),
-    ai_enabled: boolValue(body.ai_enabled, existing.ai_enabled !== false)
+    ai_enabled: boolValue(body.ai_enabled, existing.ai_enabled !== false),
+    updated_at: new Date().toISOString()
   };
   product.specs = buildSpecs(product);
   product.installation_guide = buildInstallationGuide(product);
@@ -100,30 +94,9 @@ export function normalizeProductPayload(body = {}, existing = {}, mainImageUrl =
 }
 
 async function ensureDatabase() {
-  if (!pool) return;
-  if (initialized) return;
-
+  if (!pool || initialized) return;
+  initialized = true;
   await pool.query(`
-    CREATE TABLE IF NOT EXISTS categories (
-      id SERIAL PRIMARY KEY,
-      name TEXT UNIQUE NOT NULL,
-      slug TEXT UNIQUE NOT NULL,
-      description TEXT,
-      is_active BOOLEAN DEFAULT true,
-      created_at TIMESTAMPTZ DEFAULT now(),
-      updated_at TIMESTAMPTZ DEFAULT now()
-    );
-
-    CREATE TABLE IF NOT EXISTS lines (
-      id SERIAL PRIMARY KEY,
-      name TEXT UNIQUE NOT NULL,
-      slug TEXT UNIQUE NOT NULL,
-      description TEXT,
-      is_active BOOLEAN DEFAULT true,
-      created_at TIMESTAMPTZ DEFAULT now(),
-      updated_at TIMESTAMPTZ DEFAULT now()
-    );
-
     CREATE TABLE IF NOT EXISTS products (
       id SERIAL PRIMARY KEY,
       sku TEXT UNIQUE NOT NULL,
@@ -155,7 +128,6 @@ async function ensureDatabase() {
       created_at TIMESTAMPTZ DEFAULT now(),
       updated_at TIMESTAMPTZ DEFAULT now()
     );
-
     CREATE TABLE IF NOT EXISTS recommendations (
       id SERIAL PRIMARY KEY,
       source_product_id INTEGER REFERENCES products(id) ON DELETE CASCADE,
@@ -166,7 +138,6 @@ async function ensureDatabase() {
       created_at TIMESTAMPTZ DEFAULT now(),
       UNIQUE(source_product_id, recommended_product_id)
     );
-
     CREATE TABLE IF NOT EXISTS qrs (
       id SERIAL PRIMARY KEY,
       product_id INTEGER REFERENCES products(id) ON DELETE CASCADE,
@@ -181,7 +152,6 @@ async function ensureDatabase() {
       created_at TIMESTAMPTZ DEFAULT now(),
       updated_at TIMESTAMPTZ DEFAULT now()
     );
-
     CREATE TABLE IF NOT EXISTS leads (
       id SERIAL PRIMARY KEY,
       email TEXT NOT NULL,
@@ -193,7 +163,6 @@ async function ensureDatabase() {
       contacted BOOLEAN DEFAULT false,
       created_at TIMESTAMPTZ DEFAULT now()
     );
-
     CREATE TABLE IF NOT EXISTS scans (
       id SERIAL PRIMARY KEY,
       qr_id INTEGER,
@@ -201,7 +170,6 @@ async function ensureDatabase() {
       scanned_at TIMESTAMPTZ DEFAULT now(),
       user_agent TEXT
     );
-
     CREATE TABLE IF NOT EXISTS questions (
       id SERIAL PRIMARY KEY,
       product_id INTEGER,
@@ -236,8 +204,6 @@ async function ensureDatabase() {
     ALTER TABLE products ADD COLUMN IF NOT EXISTS is_active BOOLEAN DEFAULT true;
     ALTER TABLE products ADD COLUMN IF NOT EXISTS ai_enabled BOOLEAN DEFAULT true;
   `);
-
-  initialized = true;
 }
 
 async function query(sql, params = []) {
@@ -249,50 +215,56 @@ async function query(sql, params = []) {
 function rowProduct(row) {
   if (!row) return null;
   const product = { ...row };
+
+  // Compatibilidad con productos viejos o tablas ya existentes en Supabase:
+  // si specs/installation_guide vienen vacíos, los reconstruimos desde las columnas planas.
   const specsFromDb = Array.isArray(product.specs) ? product.specs : [];
   product.specs = specsFromDb.length ? specsFromDb : buildSpecs(product);
+
   const guideFromDb = product.installation_guide && typeof product.installation_guide === 'object' ? product.installation_guide : {};
   product.installation_guide = {
     ...buildInstallationGuide(product),
     ...guideFromDb,
     main_video_url: guideFromDb.main_video_url || product.installation_video_url || ''
   };
+
   return product;
 }
 
 export async function listProducts() {
+  requireDatabase();
   const result = await query('SELECT * FROM products ORDER BY id DESC');
   return result.rows.map(rowProduct);
 }
 
 export async function getProductById(id) {
+  requireDatabase();
   const result = await query('SELECT * FROM products WHERE id=$1', [id]);
   return rowProduct(result.rows[0]);
 }
 
 export async function getProductBySlug(slug, onlyActive = false) {
+  requireDatabase();
   const result = await query(`SELECT * FROM products WHERE slug=$1 ${onlyActive ? 'AND is_active=true' : ''}`, [slug]);
   return rowProduct(result.rows[0]);
 }
 
 export async function createProduct(product, generate = true) {
+  requireDatabase();
   const result = await query(`
     INSERT INTO products (sku, slug, name, short_name, category_name, line_name, short_description, long_description, main_image_url, manual_pdf_url, installation_video_url, difficulty_level, usage_type, alcance, alcance_unit, presion, presion_unit, uso, conexion, conexion_unit, installation_description, specs, installation_guide, is_featured, is_active, ai_enabled)
     VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18,$19,$20,$21,$22::jsonb,$23::jsonb,$24,$25,$26)
-    RETURNING *`,
-    [product.sku, product.slug, product.name, product.short_name, product.category_name, product.line_name, product.short_description, product.long_description, product.main_image_url, product.manual_pdf_url, product.installation_video_url, product.difficulty_level, product.usage_type, product.alcance, product.alcance_unit, product.presion, product.presion_unit, product.uso, product.conexion, product.conexion_unit, product.installation_description, JSON.stringify(product.specs), JSON.stringify(product.installation_guide), product.is_featured, product.is_active, product.ai_enabled]
-  );
+    RETURNING *`, [product.sku, product.slug, product.name, product.short_name, product.category_name, product.line_name, product.short_description, product.long_description, product.main_image_url, product.manual_pdf_url, product.installation_video_url, product.difficulty_level, product.usage_type, product.alcance, product.alcance_unit, product.presion, product.presion_unit, product.uso, product.conexion, product.conexion_unit, product.installation_description, JSON.stringify(product.specs), JSON.stringify(product.installation_guide), product.is_featured, product.is_active, product.ai_enabled]);
   const saved = rowProduct(result.rows[0]);
   if (generate) await generateSmartRecommendations(saved);
   return saved;
 }
 
 export async function updateProduct(id, product) {
+  requireDatabase();
   const result = await query(`
     UPDATE products SET sku=$1, slug=$2, name=$3, short_name=$4, category_name=$5, line_name=$6, short_description=$7, long_description=$8, main_image_url=$9, manual_pdf_url=$10, installation_video_url=$11, difficulty_level=$12, usage_type=$13, alcance=$14, alcance_unit=$15, presion=$16, presion_unit=$17, uso=$18, conexion=$19, conexion_unit=$20, installation_description=$21, specs=$22::jsonb, installation_guide=$23::jsonb, is_featured=$24, is_active=$25, ai_enabled=$26, updated_at=now()
-    WHERE id=$27 RETURNING *`,
-    [product.sku, product.slug, product.name, product.short_name, product.category_name, product.line_name, product.short_description, product.long_description, product.main_image_url, product.manual_pdf_url, product.installation_video_url, product.difficulty_level, product.usage_type, product.alcance, product.alcance_unit, product.presion, product.presion_unit, product.uso, product.conexion, product.conexion_unit, product.installation_description, JSON.stringify(product.specs), JSON.stringify(product.installation_guide), product.is_featured, product.is_active, product.ai_enabled, id]
-  );
+    WHERE id=$27 RETURNING *`, [product.sku, product.slug, product.name, product.short_name, product.category_name, product.line_name, product.short_description, product.long_description, product.main_image_url, product.manual_pdf_url, product.installation_video_url, product.difficulty_level, product.usage_type, product.alcance, product.alcance_unit, product.presion, product.presion_unit, product.uso, product.conexion, product.conexion_unit, product.installation_description, JSON.stringify(product.specs), JSON.stringify(product.installation_guide), product.is_featured, product.is_active, product.ai_enabled, id]);
   const saved = rowProduct(result.rows[0]);
   if (saved) await generateSmartRecommendations(saved);
   return saved;
@@ -326,6 +298,7 @@ function recommendationLabel(name = '') {
   return ['Compatible', 'Producto relacionado para completar la instalación.'];
 }
 
+
 function generatedRecommendationItems(product = {}) {
   const base = `${product.name || ''} ${product.category_name || ''}`.trim();
   const needs = [
@@ -358,89 +331,105 @@ async function generateSmartRecommendations(product) {
   await query('DELETE FROM recommendations WHERE source_product_id=$1', [product.id]);
   for (const target of targets) {
     const [type, reason] = recommendationLabel(target.product.name || target.product.category_name || '');
-    await query(
-      'INSERT INTO recommendations (source_product_id, recommended_product_id, recommendation_type, reason, priority) VALUES ($1,$2,$3,$4,$5) ON CONFLICT (source_product_id, recommended_product_id) DO UPDATE SET recommendation_type=EXCLUDED.recommendation_type, reason=EXCLUDED.reason, priority=EXCLUDED.priority',
-      [product.id, target.product.id, type, reason, target.priority]
-    );
+    await query('INSERT INTO recommendations (source_product_id, recommended_product_id, recommendation_type, reason, priority) VALUES ($1,$2,$3,$4,$5) ON CONFLICT (source_product_id, recommended_product_id) DO UPDATE SET recommendation_type=EXCLUDED.recommendation_type, reason=EXCLUDED.reason, priority=EXCLUDED.priority', [product.id, target.product.id, type, reason, target.priority]);
   }
 }
 
 export async function listRecommendations() {
+  requireDatabase();
   const result = await query('SELECT * FROM recommendations ORDER BY source_product_id, priority');
   return result.rows;
 }
 
 export async function recommendationsForProduct(productId) {
+  requireDatabase();
   const result = await query('SELECT * FROM recommendations WHERE source_product_id=$1 ORDER BY priority', [productId]);
   return result.rows;
 }
 
 export async function count(table) {
-  if (!allowedCountTables.has(table)) throw new Error('Tabla no permitida');
+  requireDatabase();
   const result = await query(`SELECT COUNT(*)::int AS count FROM ${table}`);
   return result.rows[0].count;
 }
 
-export async function listCategories() {
-  const result = await query('SELECT * FROM categories ORDER BY name');
-  return result.rows;
-}
-
-export async function listLines() {
-  const result = await query('SELECT * FROM lines ORDER BY name');
-  return result.rows;
-}
-
 export async function listQrs() {
+  requireDatabase();
   const result = await query('SELECT * FROM qrs ORDER BY id DESC');
   return result.rows;
 }
 
 export async function createQr(qr) {
-  const result = await query(
-    'INSERT INTO qrs (product_id, qr_code, qr_url, qr_image_url, store_name, store_branch, region, campaign_name, is_active) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9) RETURNING *',
-    [qr.product_id, qr.qr_code, qr.qr_url, qr.qr_image_url, qr.store_name, qr.store_branch, qr.region, qr.campaign_name, qr.is_active]
-  );
+  requireDatabase();
+  const result = await query('INSERT INTO qrs (product_id, qr_code, qr_url, qr_image_url, store_name, store_branch, region, campaign_name, is_active) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9) RETURNING *', [qr.product_id, qr.qr_code, qr.qr_url, qr.qr_image_url, qr.store_name, qr.store_branch, qr.region, qr.campaign_name, qr.is_active]);
   return result.rows[0];
 }
 
 export async function updateQrImage(id, qr_url, qr_image_url) {
+  requireDatabase();
   const result = await query('UPDATE qrs SET qr_url=$1, qr_image_url=$2, updated_at=now() WHERE id=$3 RETURNING *', [qr_url, qr_image_url, id]);
   return result.rows[0];
 }
 
+
 export async function getQrById(id) {
+  requireDatabase();
   const result = await query('SELECT * FROM qrs WHERE id=$1', [id]);
   return result.rows[0];
 }
 
 export async function getQrByCode(code) {
+  requireDatabase();
   const result = await query('SELECT * FROM qrs WHERE qr_code=$1 AND is_active=true', [code]);
   return result.rows[0];
 }
 
 export async function addScan(scan) {
+  requireDatabase();
   await query('INSERT INTO scans (qr_id, product_id, user_agent) VALUES ($1,$2,$3)', [scan.qr_id, scan.product_id, scan.user_agent]);
 }
 
 export async function addLead(lead) {
-  const result = await query(
-    'INSERT INTO leads (email, name, product_id, qr_id, source, accepts_marketing, contacted) VALUES ($1,$2,$3,$4,$5,$6,false) RETURNING *',
-    [lead.email, lead.name, lead.product_id, lead.qr_id, lead.source, lead.accepts_marketing]
-  );
+  requireDatabase();
+  const result = await query('INSERT INTO leads (email, name, product_id, qr_id, source, accepts_marketing, contacted) VALUES ($1,$2,$3,$4,$5,$6,false) RETURNING *', [lead.email, lead.name, lead.product_id, lead.qr_id, lead.source, lead.accepts_marketing]);
   return result.rows[0];
 }
 
 export async function listLeads() {
+  requireDatabase();
   const result = await query('SELECT * FROM leads ORDER BY id DESC');
   return result.rows;
 }
 
 export async function addQuestion(question) {
+  requireDatabase();
   await query('INSERT INTO questions (product_id, session_id, question, answer, source) VALUES ($1,$2,$3,$4,$5)', [question.product_id, question.session_id, question.question, question.answer, question.source]);
 }
 
 export async function listQuestions() {
+  requireDatabase();
   const result = await query('SELECT * FROM questions ORDER BY id DESC');
   return result.rows;
 }
+
+
+export async function databaseDebug() {
+  requireDatabase();
+  await ensureDatabase();
+  const result = await pool.query(`
+    SELECT
+      current_database() AS database_name,
+      current_user AS database_user,
+      current_schema() AS schema_name,
+      inet_server_addr()::text AS server_addr,
+      (SELECT COUNT(*)::int FROM products) AS products_count,
+      (SELECT COUNT(*)::int FROM qrs) AS qrs_count,
+      (SELECT COUNT(*)::int FROM recommendations) AS recommendations_count,
+      (SELECT COUNT(*)::int FROM leads) AS leads_count,
+      (SELECT COUNT(*)::int FROM questions) AS questions_count,
+      (SELECT COUNT(*)::int FROM scans) AS scans_count
+  `);
+  return result.rows[0];
+}
+
+export { hasDatabase };
