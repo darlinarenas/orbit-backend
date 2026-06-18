@@ -4,11 +4,10 @@ import QRCode from 'qrcode';
 import multer from 'multer';
 import fs from 'fs';
 import path from 'path';
-import { db } from '../data/db.js';
 import {
   normalizeProductPayload, listProducts, getProductById, createProduct, updateProduct,
   listRecommendations, recommendationsForProduct, count, listQrs, createQr, updateQrImage,
-  listLeads, listQuestions, getQrById
+  listLeads, listQuestions, getQrById, listCategories, listLines
 } from '../data/store.js';
 
 const router = Router();
@@ -127,8 +126,14 @@ router.put('/products/:id', adminAuth, upload.single('main_image'), async (req,r
   } catch(e){ next(e); }
 });
 
-router.get('/categories', adminAuth, (req,res)=>res.json({items:db.categories}));
-router.get('/lines', adminAuth, (req,res)=>res.json({items:db.lines}));
+router.get('/categories', adminAuth, async (req,res,next)=>{
+  try { res.json({items: await listCategories()}); }
+  catch(e){ next(e); }
+});
+router.get('/lines', adminAuth, async (req,res,next)=>{
+  try { res.json({items: await listLines()}); }
+  catch(e){ next(e); }
+});
 router.get('/compatibilities', adminAuth, (req,res)=>res.json({items:[]}));
 router.get('/guides', adminAuth, (req,res)=>res.json({items:[{title:'Guía Aspersor Pop-Up', description:'Instalación básica', is_active:true}]}));
 
