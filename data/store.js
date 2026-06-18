@@ -165,6 +165,30 @@ async function ensureDatabase() {
       source TEXT,
       created_at TIMESTAMPTZ DEFAULT now()
     );
+
+    ALTER TABLE products ADD COLUMN IF NOT EXISTS short_name TEXT;
+    ALTER TABLE products ADD COLUMN IF NOT EXISTS category_name TEXT;
+    ALTER TABLE products ADD COLUMN IF NOT EXISTS line_name TEXT;
+    ALTER TABLE products ADD COLUMN IF NOT EXISTS short_description TEXT;
+    ALTER TABLE products ADD COLUMN IF NOT EXISTS long_description TEXT;
+    ALTER TABLE products ADD COLUMN IF NOT EXISTS main_image_url TEXT;
+    ALTER TABLE products ADD COLUMN IF NOT EXISTS manual_pdf_url TEXT;
+    ALTER TABLE products ADD COLUMN IF NOT EXISTS installation_video_url TEXT;
+    ALTER TABLE products ADD COLUMN IF NOT EXISTS difficulty_level TEXT;
+    ALTER TABLE products ADD COLUMN IF NOT EXISTS usage_type TEXT;
+    ALTER TABLE products ADD COLUMN IF NOT EXISTS alcance TEXT;
+    ALTER TABLE products ADD COLUMN IF NOT EXISTS alcance_unit TEXT DEFAULT 'm';
+    ALTER TABLE products ADD COLUMN IF NOT EXISTS presion TEXT;
+    ALTER TABLE products ADD COLUMN IF NOT EXISTS presion_unit TEXT DEFAULT 'PSI';
+    ALTER TABLE products ADD COLUMN IF NOT EXISTS uso TEXT;
+    ALTER TABLE products ADD COLUMN IF NOT EXISTS conexion TEXT;
+    ALTER TABLE products ADD COLUMN IF NOT EXISTS conexion_unit TEXT;
+    ALTER TABLE products ADD COLUMN IF NOT EXISTS installation_description TEXT;
+    ALTER TABLE products ADD COLUMN IF NOT EXISTS specs JSONB DEFAULT '[]'::jsonb;
+    ALTER TABLE products ADD COLUMN IF NOT EXISTS installation_guide JSONB DEFAULT '{}'::jsonb;
+    ALTER TABLE products ADD COLUMN IF NOT EXISTS is_featured BOOLEAN DEFAULT false;
+    ALTER TABLE products ADD COLUMN IF NOT EXISTS is_active BOOLEAN DEFAULT true;
+    ALTER TABLE products ADD COLUMN IF NOT EXISTS ai_enabled BOOLEAN DEFAULT true;
   `);
 }
 
@@ -174,7 +198,22 @@ async function query(sql, params = []) {
 }
 
 function rowProduct(row) {
-  return row ? { ...row, specs: row.specs || [], installation_guide: row.installation_guide || {} } : null;
+  if (!row) return null;
+  const product = { ...row };
+
+  // Compatibilidad con productos viejos o tablas ya existentes en Supabase:
+  // si specs/installation_guide vienen vacíos, los reconstruimos desde las columnas planas.
+  const specsFromDb = Array.isArray(product.specs) ? product.specs : [];
+  product.specs = specsFromDb.length ? specsFromDb : buildSpecs(product);
+
+  const guideFromDb = product.installation_guide && typeof product.installation_guide === 'object' ? product.installation_guide : {};
+  product.installation_guide = {
+    ...buildInstallationGuide(product),
+    ...guideFromDb,
+    main_video_url: guideFromDb.main_video_url || product.installation_video_url || ''
+  };
+
+  return product;
 }
 
 async function seedIfEmpty() {
@@ -268,6 +307,33 @@ function recommendationLabel(name = '') {
   if (t.includes('programador')) return ['Premium', 'Automatiza horarios y mejora el ahorro de agua.'];
   if (t.includes('filtro')) return ['Recomendado', 'Protege el sistema de partículas y suciedad.'];
   return ['Compatible', 'Producto relacionado para completar la instalación.'];
+}
+
+
+function generatedRecommendationItems(product = {}) {
+  const base = `${product.name || ''} ${product.category_name || ''}`.trim();
+  const needs = [
+    ['boquilla', 'Boquilla compatible Orbit', 'Clave', 'Controla la salida, cobertura y patrón de riego.'],
+    ['conector', 'Conector compatible Orbit', 'Necesario', 'Permite unir el producto a la línea de riego.'],
+    ['tuberia', 'Tubería de riego Orbit', 'Según área', 'Ayuda a distribuir el agua hasta la zona de instalación.'],
+    ['programador', 'Programador Orbit', 'Premium', 'Automatiza horarios y mejora el ahorro de agua.'],
+    ['filtro', 'Filtro para riego Orbit', 'Recomendado', 'Protege el sistema de partículas y suciedad.']
+  ];
+  return needs.map((x, index) => ({
+    id: `auto-${product.id || product.slug || 'producto'}-${x[0]}`,
+    slug: `recomendado-${x[0]}`,
+    name: x[1],
+    short_description: base ? `Sugerido para completar la instalación de ${base}.` : 'Sugerido para completar la instalación.',
+    recommendation_type: x[2],
+    reason: x[3],
+    icon: index === 0 ? '💧' : index === 1 ? '🔗' : index === 2 ? '〰️' : index === 3 ? '⏱️' : '🛡️',
+    is_generated: true,
+    priority: index + 1
+  }));
+}
+
+export function generatedRecommendationsForProduct(product = {}) {
+  return generatedRecommendationItems(product);
 }
 
 async function generateSmartRecommendations(product) {

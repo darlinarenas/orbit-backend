@@ -3,6 +3,7 @@ import {
   getProductBySlug,
   getProductById,
   recommendationsForProduct,
+  generatedRecommendationsForProduct,
   getQrByCode,
   addLead,
   listProducts
@@ -31,7 +32,10 @@ router.get('/product/:slug/recommendations', async (req,res,next)=>{
       const p = await getProductById(r.recommended_product_id);
       if (p && p.is_active !== false) recommendations.push({...r, ...p, reason:r.reason, recommendation_type:r.recommendation_type});
     }
-    res.json({recommendations});
+
+    // Si todavía no existen accesorios cargados en la BD, igual mostramos una compra sugerida
+    // generada desde el producto: boquilla, conector, tubería, programador y filtro.
+    res.json({recommendations: recommendations.length ? recommendations : generatedRecommendationsForProduct(source)});
   } catch(e){ next(e); }
 });
 
