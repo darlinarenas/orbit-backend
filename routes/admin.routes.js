@@ -5,6 +5,11 @@ import multer from 'multer';
 import fs from 'fs';
 import path from 'path';
 import { db } from '../data/db.js';
+import {
+  normalizeProductPayload, listProducts, getProductById, createProduct, updateProduct,
+  listRecommendations, recommendationsForProduct, count, listQrs, createQr, updateQrImage,
+  listLeads, listQuestions, getQrById
+} from '../data/store.js';
 
 const router = Router();
 const SECRET = process.env.JWT_SECRET || 'orbit_assistant_dev_secret';
@@ -51,33 +56,10 @@ function backendUrl(req){
 }
 
 function normalizeProduct(req, existing={}){
-  const b=req.body||{};
-  const name=b.name || existing.name || '';
-  const sku=b.sku || existing.sku || '';
-  const uploaded=req.file ? `${backendUrl(req)}/uploads/products/main/${req.file.filename}` : null;
-
-  return {
-    ...existing,
-    sku,
-    name,
-    slug:b.slug || existing.slug || slugify(name || sku || 'producto'),
-    short_name:b.short_name || existing.short_name || name,
-    category_name:b.category_name || existing.category_name || 'Aspersores',
-    line_name:b.line_name || existing.line_name || '',
-    short_description:b.short_description || existing.short_description || '',
-    long_description:b.long_description || existing.long_description || '',
-    main_image_url:uploaded || b.main_image_url || existing.main_image_url || '',
-    manual_pdf_url:b.manual_pdf_url || existing.manual_pdf_url || '',
-    installation_video_url:b.installation_video_url || existing.installation_video_url || '',
-    difficulty_level:b.difficulty_level || existing.difficulty_level || '',
-    usage_type:b.usage_type || existing.usage_type || '',
-    is_featured:b.is_featured === 'true' || b.is_featured === true || existing.is_featured || false,
-    is_active:b.is_active === 'false' ? false : true,
-    ai_enabled:b.ai_enabled === 'false' ? false : true,
-    specs:existing.specs || [],
-    updated_at:new Date().toISOString()
-  };
+  const uploaded = req.file ? `${backendUrl(req)}/uploads/products/main/${req.file.filename}` : '';
+  return normalizeProductPayload(req.body || {}, existing, uploaded);
 }
+
 
 async function saveQrImage(req, qr){
   const publicUrl = `${FRONTEND_URL}/qr.html?qr=${encodeURIComponent(qr.qr_code)}`;
@@ -86,6 +68,7 @@ async function saveQrImage(req, qr){
   await QRCode.toFile(filepath, publicUrl, { width:900, margin:2, errorCorrectionLevel:'H' });
   qr.qr_url = publicUrl;
   qr.qr_image_url = `${backendUrl(req)}/uploads/qrs/png/${filename}`;
+  if (qr.id) await updateQrImage(qr.id, qr.qr_url, qr.qr_image_url);
   return qr;
 }
 
@@ -100,34 +83,48 @@ router.post('/auth/login',(req,res)=>{
 
 router.get('/auth/me', adminAuth, (req,res)=>res.json({admin:req.admin}));
 
-router.get('/analytics/overview', adminAuth, (req,res)=>res.json({
-  products: db.products.length,
-  scans: db.scans.length || 128,
-  questions: db.questions.length || 34,
-  leads: db.leads.length,
-  recommendation_clicks: 42
-}));
-
-router.get('/products', adminAuth, (req,res)=>res.json({products:db.products}));
-
-router.get('/products/:id', adminAuth, (req,res)=>{
-  const product=db.products.find(p=>p.id===Number(req.params.id));
-  if(!product) return res.status(404).json({message:'Producto no encontrado'});
-  res.json({product});
+router.get('/analytics/overview', adminAuth, async (req,res,next)=>{
+  try {
+    res.json({
+      products: await count('products'),
+      scans: await count('scans'),
+      questions: await count('questions'),
+      leads: await count('leads'),
+      recommendation_clicks: 42
+    });
+  } catch (e) { next(e); }
 });
 
-router.post('/products', adminAuth, upload.single('main_image'), (req,res)=>{
-  const product=normalizeProduct(req,{id:db.products.length+1,created_at:new Date().toISOString()});
-  if(!product.sku || !product.name) return res.status(400).json({message:'SKU y nombre son obligatorios'});
-  db.products.push(product);
-  res.json({ok:true,product});
+router.get('/products', adminAuth, async (req,res,next)=>{
+  try { res.json({products: await listProducts()}); }
+  catch(e){ next(e); }
 });
 
-router.put('/products/:id', adminAuth, upload.single('main_image'), (req,res)=>{
-  const idx=db.products.findIndex(p=>p.id===Number(req.params.id));
-  if(idx<0) return res.status(404).json({message:'Producto no encontrado'});
-  db.products[idx]=normalizeProduct(req, db.products[idx]);
-  res.json({ok:true,product:db.products[idx]});
+router.get('/products/:id', adminAuth, async (req,res,next)=>{
+  try {
+    const product = await getProductById(Number(req.params.id));
+    if(!product) return res.status(404).json({message:'Producto no encontrado'});
+    res.json({product});
+  } catch(e){ next(e); }
+});
+
+router.post('/products', adminAuth, upload.single('main_image'), async (req,res,next)=>{
+  try {
+    const product = normalizeProduct(req, {created_at:new Date().toISOString()});
+    if(!product.sku || !product.name) return res.status(400).json({message:'SKU y nombre son obligatorios'});
+    const saved = await createProduct(product);
+    res.json({ok:true,product:saved});
+  } catch(e){ next(e); }
+});
+
+router.put('/products/:id', adminAuth, upload.single('main_image'), async (req,res,next)=>{
+  try {
+    const existing = await getProductById(Number(req.params.id));
+    if(!existing) return res.status(404).json({message:'Producto no encontrado'});
+    const product = normalizeProduct(req, existing);
+    const saved = await updateProduct(Number(req.params.id), product);
+    res.json({ok:true,product:saved});
+  } catch(e){ next(e); }
 });
 
 router.get('/categories', adminAuth, (req,res)=>res.json({items:db.categories}));
@@ -135,70 +132,96 @@ router.get('/lines', adminAuth, (req,res)=>res.json({items:db.lines}));
 router.get('/compatibilities', adminAuth, (req,res)=>res.json({items:[]}));
 router.get('/guides', adminAuth, (req,res)=>res.json({items:[{title:'Guía Aspersor Pop-Up', description:'Instalación básica', is_active:true}]}));
 
-router.get('/recommendations', adminAuth, (req,res)=>{
-  const recommendations=db.recommendations.map(r=>({
-    ...r,
-    source_name:db.products.find(p=>p.id===r.source_product_id)?.name,
-    recommended_name:db.products.find(p=>p.id===r.recommended_product_id)?.name
-  }));
-  res.json({recommendations});
+router.get('/recommendations', adminAuth, async (req,res,next)=>{
+  try {
+    const products = await listProducts();
+    const recommendations = (await listRecommendations()).map(r=>({
+      ...r,
+      source_name:products.find(p=>p.id===r.source_product_id)?.name,
+      recommended_name:products.find(p=>p.id===r.recommended_product_id)?.name
+    }));
+    res.json({recommendations});
+  } catch(e){ next(e); }
 });
 
-router.get('/qr', adminAuth, async (req,res)=>{
-  for(const qr of db.qrs){ if(!qr.qr_image_url) await saveQrImage(req, qr); }
-  res.json({qrs:db.qrs.map(q=>{
-    const p=db.products.find(x=>x.id===q.product_id);
-    return {...q,product_sku:p?.sku||'',product_name:p?.name||'Producto no encontrado',product_slug:p?.slug||''};
-  })});
+router.get('/qr', adminAuth, async (req,res,next)=>{
+  try {
+    const qrs = await listQrs();
+    for(const qr of qrs){ if(!qr.qr_image_url) await saveQrImage(req, qr); }
+    const products = await listProducts();
+    res.json({qrs:qrs.map(q=>{
+      const p=products.find(x=>x.id===q.product_id);
+      return {...q,product_sku:p?.sku||'',product_name:p?.name||'Producto no encontrado',product_slug:p?.slug||''};
+    })});
+  } catch(e){ next(e); }
 });
 
-router.post('/qr/generate', adminAuth, async (req,res)=>{
-  const product=db.products.find(p=>p.id===Number(req.body.productId));
-  if(!product) return res.status(404).json({message:'Producto no encontrado para generar QR'});
-  const code=req.body.qrCode || `${product.sku}-${Date.now().toString().slice(-5)}`;
-  const qr={id:db.qrs.length+1,product_id:product.id,qr_code:code,store_name:req.body.store_name||'',store_branch:req.body.store_branch||'',region:req.body.region||'',campaign_name:req.body.campaign_name||'QR producto',is_active:true,created_at:new Date().toISOString(),updated_at:new Date().toISOString()};
-  await saveQrImage(req, qr);
-  db.qrs.push(qr);
-  res.json({ok:true,qr,product});
+router.post('/qr/generate', adminAuth, async (req,res,next)=>{
+  try {
+    const product=await getProductById(Number(req.body.productId));
+    if(!product) return res.status(404).json({message:'Producto no encontrado para generar QR'});
+    const code=req.body.qrCode || `${product.sku}-${Date.now().toString().slice(-5)}`;
+    let qr={product_id:product.id,qr_code:code,store_name:req.body.store_name||'',store_branch:req.body.store_branch||'',region:req.body.region||'',campaign_name:req.body.campaign_name||'QR producto',is_active:true,created_at:new Date().toISOString(),updated_at:new Date().toISOString()};
+    qr = await createQr(qr);
+    qr = await saveQrImage(req, qr);
+    res.json({ok:true,qr,product});
+  } catch(e){ next(e); }
 });
 
-router.get('/qr/:id/download', adminAuth, async (req,res)=>{
-  const qr=db.qrs.find(q=>q.id===Number(req.params.id));
-  if(!qr) return res.status(404).send('QR no encontrado');
-  await saveQrImage(req, qr);
-  const publicUrl = `${FRONTEND_URL}/qr.html?qr=${encodeURIComponent(qr.qr_code)}`;
-  const format=req.query.format || 'png';
 
-  if(format==='svg'){
-    const svg=await QRCode.toString(publicUrl,{type:'svg'});
-    res.setHeader('Content-Type','image/svg+xml');
-    res.setHeader('Content-Disposition',`attachment; filename="${qr.qr_code}.svg"`);
-    return res.send(svg);
-  }
+router.get('/qr/:id/download', adminAuth, async (req,res,next)=>{
+  try {
+    const qr = await getQrById(Number(req.params.id));
+    if(!qr) return res.status(404).send('QR no encontrado');
+    await saveQrImage(req, qr);
+    const publicUrl = `${FRONTEND_URL}/qr.html?qr=${encodeURIComponent(qr.qr_code)}`;
+    const format=req.query.format || 'png';
 
-  if(format==='pdf'){
-    res.setHeader('Content-Type','application/pdf');
-    res.setHeader('Content-Disposition',`attachment; filename="${qr.qr_code}.pdf"`);
-    return res.send(Buffer.from('%PDF-1.4\n% Orbit Assistant QR PDF demo\n'));
-  }
+    if(format==='svg'){
+      const svg=await QRCode.toString(publicUrl,{type:'svg'});
+      res.setHeader('Content-Type','image/svg+xml');
+      res.setHeader('Content-Disposition',`attachment; filename="${qr.qr_code}.svg"`);
+      return res.send(svg);
+    }
 
-  res.setHeader('Content-Type','image/png');
-  res.setHeader('Content-Disposition',`attachment; filename="${qr.qr_code}.png"`);
-  res.sendFile(path.join(qrDir, `${qr.qr_code}.png`));
+    if(format==='pdf'){
+      res.setHeader('Content-Type','application/pdf');
+      res.setHeader('Content-Disposition',`attachment; filename="${qr.qr_code}.pdf"`);
+      return res.send(Buffer.from('%PDF-1.4\n% Orbit Assistant QR PDF demo\n'));
+    }
+
+    res.setHeader('Content-Type','image/png');
+    res.setHeader('Content-Disposition',`attachment; filename="${qr.qr_code}.png"`);
+    res.sendFile(path.join(qrDir, `${qr.qr_code}.png`));
+  } catch(e){ next(e); }
 });
 
-router.get('/leads', adminAuth, (req,res)=>res.json({leads:db.leads.map(l=>({...l,product_name:db.products.find(p=>p.id===l.product_id)?.name || 'Sin producto'}))}));
 
-router.get('/leads/export/csv', adminAuth, (req,res)=>{
-  const rows=[['email','nombre','producto','fuente','acepta_marketing','fecha']];
-  db.leads.forEach(l=>rows.push([l.email,l.name||'',db.products.find(p=>p.id===l.product_id)?.name||'',l.source,l.accepts_marketing?'si':'no',l.created_at]));
-  const csv=rows.map(r=>r.map(v=>`"${String(v).replaceAll('"','""')}"`).join(',')).join('\n');
-  res.setHeader('Content-Type','text/csv; charset=utf-8');
-  res.setHeader('Content-Disposition','attachment; filename="orbit-leads.csv"');
-  res.send(csv);
+router.get('/leads', adminAuth, async (req,res,next)=>{
+  try {
+    const products = await listProducts();
+    const leads = (await listLeads()).map(l=>({...l,product_name:products.find(p=>p.id===l.product_id)?.name || 'Sin producto'}));
+    res.json({leads});
+  } catch(e){ next(e); }
 });
 
-router.get('/questions', adminAuth, (req,res)=>res.json({questions:db.questions}));
+router.get('/leads/export/csv', adminAuth, async (req,res,next)=>{
+  try {
+    const products = await listProducts();
+    const rows=[['email','nombre','producto','fuente','acepta_marketing','fecha']];
+    (await listLeads()).forEach(l=>rows.push([l.email,l.name||'',products.find(p=>p.id===l.product_id)?.name||'',l.source,l.accepts_marketing?'si':'no',l.created_at]));
+    const csv=rows.map(r=>r.map(v=>`"${String(v).replaceAll('"','""')}"`).join(',')).join('\n');
+    res.setHeader('Content-Type','text/csv; charset=utf-8');
+    res.setHeader('Content-Disposition',`attachment; filename="orbit-leads.csv"`);
+    res.send(csv);
+  } catch(e){ next(e); }
+});
+
+
+router.get('/questions', adminAuth, async (req,res,next)=>{
+  try { res.json({questions: await listQuestions()}); }
+  catch(e){ next(e); }
+});
 
 export default router;
 

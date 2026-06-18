@@ -20,4 +20,8 @@ app.use('/api/assistant', assistantRoutes);
 app.use('/api/admin', adminRoutes);
 
 app.use((req,res)=>res.status(404).json({message:'Ruta no encontrada'}));
+app.use((err, req, res, next) => {
+  console.error(err);
+  res.status(500).json({ message: err.message || 'Error interno del servidor' });
+});
 export default app;
