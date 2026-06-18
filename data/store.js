@@ -7,6 +7,22 @@ const pool = hasDatabase ? new Pool({
   ssl: process.env.PGSSLMODE === 'disable' ? false : { rejectUnauthorized: false }
 }) : null;
 
+function requireDatabase() {
+  if (!pool) {
+    throw new Error('DATABASE_URL no está configurada en Render. El backend no guardará productos hasta conectar Supabase.');
+  }
+}
+
+export async function checkDatabaseConnection() {
+  if (!pool) return { configured: false, connected: false, message: 'DATABASE_URL no configurada' };
+  try {
+    await pool.query('SELECT 1');
+    return { configured: true, connected: true, message: 'Supabase/PostgreSQL conectado' };
+  } catch (error) {
+    return { configured: true, connected: false, message: error.message };
+  }
+}
+
 let initialized = false;
 
 function boolValue(value, fallback = true) {
@@ -228,34 +244,28 @@ async function seedIfEmpty() {
 }
 
 export async function listProducts() {
-  if (!pool) return db.products;
+  requireDatabase();
   await seedIfEmpty();
   const result = await query('SELECT * FROM products ORDER BY id DESC');
   return result.rows.map(rowProduct);
 }
 
 export async function getProductById(id) {
-  if (!pool) return db.products.find(p => p.id === Number(id));
+  requireDatabase();
   await seedIfEmpty();
   const result = await query('SELECT * FROM products WHERE id=$1', [id]);
   return rowProduct(result.rows[0]);
 }
 
 export async function getProductBySlug(slug, onlyActive = false) {
-  if (!pool) return db.products.find(p => p.slug === slug && (!onlyActive || p.is_active));
+  requireDatabase();
   await seedIfEmpty();
   const result = await query(`SELECT * FROM products WHERE slug=$1 ${onlyActive ? 'AND is_active=true' : ''}`, [slug]);
   return rowProduct(result.rows[0]);
 }
 
 export async function createProduct(product, generate = true) {
-  if (!pool) {
-    const id = db.products.length ? Math.max(...db.products.map(p => p.id)) + 1 : 1;
-    const saved = { ...product, id, created_at: new Date().toISOString() };
-    db.products.push(saved);
-    if (generate) generateSmartRecommendationsMemory(saved);
-    return saved;
-  }
+  requireDatabase();
   const result = await query(`
     INSERT INTO products (sku, slug, name, short_name, category_name, line_name, short_description, long_description, main_image_url, manual_pdf_url, installation_video_url, difficulty_level, usage_type, alcance, alcance_unit, presion, presion_unit, uso, conexion, conexion_unit, installation_description, specs, installation_guide, is_featured, is_active, ai_enabled)
     VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18,$19,$20,$21,$22::jsonb,$23::jsonb,$24,$25,$26)
@@ -266,13 +276,7 @@ export async function createProduct(product, generate = true) {
 }
 
 export async function updateProduct(id, product) {
-  if (!pool) {
-    const idx = db.products.findIndex(p => p.id === Number(id));
-    if (idx < 0) return null;
-    db.products[idx] = { ...db.products[idx], ...product, id: Number(id) };
-    generateSmartRecommendationsMemory(db.products[idx]);
-    return db.products[idx];
-  }
+  requireDatabase();
   const result = await query(`
     UPDATE products SET sku=$1, slug=$2, name=$3, short_name=$4, category_name=$5, line_name=$6, short_description=$7, long_description=$8, main_image_url=$9, manual_pdf_url=$10, installation_video_url=$11, difficulty_level=$12, usage_type=$13, alcance=$14, alcance_unit=$15, presion=$16, presion_unit=$17, uso=$18, conexion=$19, conexion_unit=$20, installation_description=$21, specs=$22::jsonb, installation_guide=$23::jsonb, is_featured=$24, is_active=$25, ai_enabled=$26, updated_at=now()
     WHERE id=$27 RETURNING *`, [product.sku, product.slug, product.name, product.short_name, product.category_name, product.line_name, product.short_description, product.long_description, product.main_image_url, product.manual_pdf_url, product.installation_video_url, product.difficulty_level, product.usage_type, product.alcance, product.alcance_unit, product.presion, product.presion_unit, product.uso, product.conexion, product.conexion_unit, product.installation_description, JSON.stringify(product.specs), JSON.stringify(product.installation_guide), product.is_featured, product.is_active, product.ai_enabled, id]);
@@ -355,80 +359,80 @@ function generateSmartRecommendationsMemory(product) {
 }
 
 export async function listRecommendations() {
-  if (!pool) return db.recommendations;
+  requireDatabase();
   await seedIfEmpty();
   const result = await query('SELECT * FROM recommendations ORDER BY source_product_id, priority');
   return result.rows;
 }
 
 export async function recommendationsForProduct(productId) {
-  if (!pool) return db.recommendations.filter(r => r.source_product_id === Number(productId)).sort((a, b) => a.priority - b.priority);
+  requireDatabase();
   const result = await query('SELECT * FROM recommendations WHERE source_product_id=$1 ORDER BY priority', [productId]);
   return result.rows;
 }
 
 export async function count(table) {
-  if (!pool) return db[table]?.length || 0;
+  requireDatabase();
   await seedIfEmpty();
   const result = await query(`SELECT COUNT(*)::int AS count FROM ${table}`);
   return result.rows[0].count;
 }
 
 export async function listQrs() {
-  if (!pool) return db.qrs;
+  requireDatabase();
   const result = await query('SELECT * FROM qrs ORDER BY id DESC');
   return result.rows;
 }
 
 export async function createQr(qr) {
-  if (!pool) { db.qrs.push({ ...qr, id: db.qrs.length + 1 }); return db.qrs.at(-1); }
+  requireDatabase();
   const result = await query('INSERT INTO qrs (product_id, qr_code, qr_url, qr_image_url, store_name, store_branch, region, campaign_name, is_active) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9) RETURNING *', [qr.product_id, qr.qr_code, qr.qr_url, qr.qr_image_url, qr.store_name, qr.store_branch, qr.region, qr.campaign_name, qr.is_active]);
   return result.rows[0];
 }
 
 export async function updateQrImage(id, qr_url, qr_image_url) {
-  if (!pool) { const q = db.qrs.find(x => x.id === id); if (q) Object.assign(q, { qr_url, qr_image_url }); return q; }
+  requireDatabase();
   const result = await query('UPDATE qrs SET qr_url=$1, qr_image_url=$2, updated_at=now() WHERE id=$3 RETURNING *', [qr_url, qr_image_url, id]);
   return result.rows[0];
 }
 
 
 export async function getQrById(id) {
-  if (!pool) return db.qrs.find(q => q.id === Number(id));
+  requireDatabase();
   const result = await query('SELECT * FROM qrs WHERE id=$1', [id]);
   return result.rows[0];
 }
 
 export async function getQrByCode(code) {
-  if (!pool) return db.qrs.find(q => q.qr_code === code && q.is_active);
+  requireDatabase();
   const result = await query('SELECT * FROM qrs WHERE qr_code=$1 AND is_active=true', [code]);
   return result.rows[0];
 }
 
 export async function addScan(scan) {
-  if (!pool) { db.scans.push({ ...scan, id: db.scans.length + 1 }); return; }
+  requireDatabase();
   await query('INSERT INTO scans (qr_id, product_id, user_agent) VALUES ($1,$2,$3)', [scan.qr_id, scan.product_id, scan.user_agent]);
 }
 
 export async function addLead(lead) {
-  if (!pool) { const saved = { ...lead, id: db.leads.length + 1, created_at: new Date().toISOString() }; db.leads.push(saved); return saved; }
+  requireDatabase();
   const result = await query('INSERT INTO leads (email, name, product_id, qr_id, source, accepts_marketing, contacted) VALUES ($1,$2,$3,$4,$5,$6,false) RETURNING *', [lead.email, lead.name, lead.product_id, lead.qr_id, lead.source, lead.accepts_marketing]);
   return result.rows[0];
 }
 
 export async function listLeads() {
-  if (!pool) return db.leads;
+  requireDatabase();
   const result = await query('SELECT * FROM leads ORDER BY id DESC');
   return result.rows;
 }
 
 export async function addQuestion(question) {
-  if (!pool) { db.questions.push({ ...question, id: db.questions.length + 1, created_at: new Date().toISOString() }); return; }
+  requireDatabase();
   await query('INSERT INTO questions (product_id, session_id, question, answer, source) VALUES ($1,$2,$3,$4,$5)', [question.product_id, question.session_id, question.question, question.answer, question.source]);
 }
 
 export async function listQuestions() {
-  if (!pool) return db.questions;
+  requireDatabase();
   const result = await query('SELECT * FROM questions ORDER BY id DESC');
   return result.rows;
 }
