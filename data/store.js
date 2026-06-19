@@ -270,6 +270,14 @@ export async function updateProduct(id, product) {
   return saved;
 }
 
+
+export async function deleteProduct(id) {
+  requireDatabase();
+  const result = await query('DELETE FROM products WHERE id=$1 RETURNING id', [id]);
+  if (!result.rows.length) throw new Error('Producto no encontrado');
+  return true;
+}
+
 const rules = [
   { match: ['pop', 'aspersor', 'sprinkler'], want: ['boquilla', 'conector', 'tuberia', 'tubería', 'programador', 'filtro'] },
   { match: ['boquilla'], want: ['aspersor', 'conector', 'tuberia', 'tubería', 'filtro'] },
@@ -413,13 +421,6 @@ export async function listQuestions() {
 }
 
 
-
-export async function deleteProduct(id) {
-  requireDatabase();
-  const result = await query('DELETE FROM products WHERE id=$1 RETURNING id', [id]);
-  return !!result.rows[0];
-}
-
 export async function databaseDebug() {
   requireDatabase();
   await ensureDatabase();
@@ -440,4 +441,3 @@ export async function databaseDebug() {
 }
 
 export { hasDatabase };
-
