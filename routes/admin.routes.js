@@ -5,7 +5,7 @@ import multer from 'multer';
 import fs from 'fs';
 import path from 'path';
 import {
-  normalizeProductPayload, listProducts, getProductById, createProduct, updateProduct,
+  normalizeProductPayload, listProducts, getProductById, createProduct, updateProduct, deleteProduct,
   listRecommendations, recommendationsForProduct, count, listQrs, createQr, updateQrImage,
   listLeads, listQuestions, getQrById
 } from '../data/store.js';
@@ -126,6 +126,15 @@ router.put('/products/:id', adminAuth, upload.single('main_image'), async (req,r
   } catch(e){ next(e); }
 });
 
+router.delete('/products/:id', adminAuth, async (req,res,next)=>{
+  try {
+    const deleted = await deleteProduct(Number(req.params.id));
+    if(!deleted) return res.status(404).json({message:'Producto no encontrado'});
+    res.json({ok:true});
+  } catch(e){ next(e); }
+});
+
+
 router.get('/categories', adminAuth, async (req,res,next)=>{
   try {
     const products = await listProducts();
@@ -238,5 +247,8 @@ router.get('/questions', adminAuth, async (req,res,next)=>{
 });
 
 export default router;
+
+
+
 
 
